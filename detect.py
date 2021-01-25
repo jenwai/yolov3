@@ -77,84 +77,112 @@ def detect(save_img=False):
     t0 = time.time()
     img = torch.zeros((1, 3, imgsz, imgsz), device=device)  # init img
     _ = model(img.half() if half else img.float()) if device.type != 'cpu' else None  # run once
-    for path, img, im0s, vid_cap in dataset:
+
+    #save the prev pred res
+    prev_pred = None
+    frame_rate = 5
+    prev_time = 0
+    for path, img, im0s, vid_cap, cur_frame in dataset:
         img = torch.from_numpy(img).to(device)
         img = img.half() if half else img.float()  # uint8 to fp16/32
         img /= 255.0  # 0 - 255 to 0.0 - 1.0
         if img.ndimension() == 3:
             img = img.unsqueeze(0)
 
+        process_pred = True
+
         # Inference
         t1 = torch_utils.time_synchronized()
-        pred = model(img, augment=opt.augment)[0]
+
+        time_elapsed = torch_utils.time_synchronized() - prev_time
+        if prev_pred is None or time_elapsed > 1. / frame_rate:
+            prev_time = torch_utils.time_synchronized()
+            pred = model(img, augment=opt.augment)[0]
+            prev_pred = pred
+        else:
+            pred = prev_pred
+            process_pred = False
+
         t2 = torch_utils.time_synchronized()
 
-        # to float
-        if half:
-            pred = pred.float()
+        if process_pred:
+            # to float
+            if half:
+                pred = pred.float()
 
-        # Apply NMS
-        pred = non_max_suppression(pred, opt.conf_thres, opt.iou_thres,
-                                   multi_label=False, classes=opt.classes, agnostic=opt.agnostic_nms)
+            # Apply NMS
+            pred = non_max_suppression(pred, opt.conf_thres, opt.iou_thres,
+                                       multi_label=False, classes=opt.classes, agnostic=opt.agnostic_nms)
 
-        # Apply Classifier
-        if classify:
-            pred = apply_classifier(pred, modelc, img, im0s)
+            # Apply Classifier
+            if classify:
+                pred = apply_classifier(pred, modelc, img, im0s)
 
-        # Process detections
-        for i, det in enumerate(pred):  # detections for image i
-            if webcam:  # batch_size >= 1
-                p, s, im0 = path[i], '%g: ' % i, im0s[i].copy()
-            else:
-                p, s, im0 = path, '', im0s
-
-            save_path = str(Path(out) / Path(p).name)
-            s += '%gx%g ' % img.shape[2:]  # print string
-            gn = torch.tensor(im0.shape)[[1, 0, 1, 0]]  #  normalization gain whwh
-            if det is not None and len(det):
-                # Rescale boxes from imgsz to im0 size
-                det[:, :4] = scale_coords(img.shape[2:], det[:, :4], im0.shape).round()
-
-                # Print results
-                for c in det[:, -1].unique():
-                    n = (det[:, -1] == c).sum()  # detections per class
-                    s += '%g %ss, ' % (n, names[int(c)])  # add to string
-
-                # Write results
-                for *xyxy, conf, cls in reversed(det):
-                    if save_txt:  # Write to file
-                        xywh = (xyxy2xywh(torch.tensor(xyxy).view(1, 4)) / gn).view(-1).tolist()  # normalized xywh
-                        with open(save_path[:save_path.rfind('.')] + '.txt', 'a') as file:
-                            file.write(('%g ' * 5 + '\n') % (cls, *xywh))  # label format
-
-                    if save_img or view_img:  # Add bbox to image
-                        label = '%s %.2f' % (names[int(cls)], conf)
-                        plot_one_box(xyxy, im0, label=label, color=colors[int(cls)])
-
-            # Print time (inference + NMS)
-            print('%sDone. (%.3fs)' % (s, t2 - t1))
-
-            # Stream results
-            if view_img:
-                cv2.imshow(p, im0)
-                if cv2.waitKey(1) == ord('q'):  # q to quit
-                    raise StopIteration
-
-            # Save results (image with detections)
-            if save_img:
-                if dataset.mode == 'images':
-                    cv2.imwrite(save_path, im0)
+            # Process detections
+            for i, det in enumerate(pred):  # detections for image i
+                if webcam:  # batch_size >= 1
+                    p, s, im0 = path[i], '%g: ' % i, im0s[i].copy()
                 else:
-                    if vid_path != save_path:  # new video
-                        vid_path = save_path
-                        if isinstance(vid_writer, cv2.VideoWriter):
-                            vid_writer.release()  # release previous video writer
+                    p, s, im0 = path, '', im0s
 
-                        fps = vid_cap.get(cv2.CAP_PROP_FPS)
-                        w = int(vid_cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-                        h = int(vid_cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-                        vid_writer = cv2.VideoWriter(save_path, cv2.VideoWriter_fourcc(*opt.fourcc), fps, (w, h))
-                    vid_writer.write(im0)
+                save_path = str(Path(out) / Path(p).name)
+                s += '%gx%g ' % img.shape[2:]  # print string
+                gn = torch.tensor(im0.shape)[[1, 0, 1, 0]]  #  normalization gain whwh
+                if det is not None and len(det):
+                    # Rescale boxes from imgsz to im0 size
+                    det[:, :4] = scale_coords(img.shape[2:], det[:, :4], im0.shape).round()
+
+                    # Print results
+                    for c in det[:, -1].unique():
+                        n = (det[:, -1] == c).sum()  # detections per class
+                        if int(c) > len(names)-1:
+                            print('-------------------------------------------------- weird c', img.name)
+                            s += '%g weird c = %s, ' % (n, int(c))
+                        else:
+                            s += '%g %ss, ' % (n, names[int(c)])  # add to string
+
+                    # Write results
+                    for *xyxy, conf, cls in reversed(det):
+                        if save_txt:  # Write to file
+                            xywh = (xyxy2xywh(torch.tensor(xyxy).view(1, 4)) / gn).view(-1).tolist()  # normalized xywh
+                            with open(save_path[:save_path.rfind('.')] + '.txt', 'a') as file:
+                                file.write(('%g ' * 5 + '\n') % (cls, *xywh))  # label format
+
+                        if save_img or view_img:  # Add bbox to image
+                            if int(cls) > len(names)-1:
+                                label = '%s %.2f' % ('weird c', conf)
+                                colour = colors[len(names)-1]
+                            else:
+                                label = '%s %.2f' % (names[int(cls)], conf)
+                                colour = colors[int(cls)]
+                            plot_one_box(xyxy, im0, label=label, color=colour)
+
+                # Print time (inference + NMS)
+                # print('%sDone. (%.3fs)' % (s, t2 - t1))
+
+        # Stream results
+        if view_img:
+            cv2.imshow(p, im0)
+            if cv2.waitKey(1) == ord('q'):  # q to quit
+                raise StopIteration
+
+        # Save results (image with detections)
+        if save_img:
+            if dataset.mode == 'images':
+                cv2.imwrite(save_path, im0)
+            else:
+                if vid_path != save_path:  # new video
+                    vid_path = save_path
+                    if isinstance(vid_writer, cv2.VideoWriter):
+                        vid_writer.release()  # release previous video writer
+
+                    fps = vid_cap.get(cv2.CAP_PROP_FPS)
+                    w = int(vid_cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+                    h = int(vid_cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+                    vid_writer = cv2.VideoWriter(save_path, cv2.VideoWriter_fourcc(*opt.fourcc), fps, (w, h))
+                vid_writer.write(im0)
+
+        print('%sDone one frame. (%.3fs)' % (s, t2 - t1))
 
     if save_txt or save_img:
         print('Results saved to %s' % os.getcwd() + os.sep + out)
@@ -166,10 +194,27 @@ def detect(save_img=False):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('--cfg', type=str, default='cfg/yolov3-spp.cfg', help='*.cfg path')
-    parser.add_argument('--names', type=str, default='data/coco.names', help='*.names path')
-    parser.add_argument('--weights', type=str, default='weights/yolov3-spp-ultralytics.pt', help='weights path')
-    parser.add_argument('--source', type=str, default='data/samples', help='source')  # input file/folder, 0 for webcam
+    # parser.add_argument('--cfg', type=str, default='cfg/yolov3-spp.cfg', help='*.cfg path')
+    # parser.add_argument('--names', type=str, default='data/coco.names', help='*.names path')
+    # parser.add_argument('--weights', type=str, default='weights/yolov3-spp-ultralytics.pt', help='weights path')
+    # parser.add_argument('--source', type=str, default='data/samples', help='source')  # input file/folder, 0 for webcam
+    # parser.add_argument('--output', type=str, default='output', help='output folder')  # output folder
+    # parser.add_argument('--img-size', type=int, default=512, help='inference size (pixels)')
+    # parser.add_argument('--conf-thres', type=float, default=0.3, help='object confidence threshold')
+    # parser.add_argument('--iou-thres', type=float, default=0.6, help='IOU threshold for NMS')
+    # parser.add_argument('--fourcc', type=str, default='mp4v', help='output video codec (verify ffmpeg support)')
+    # parser.add_argument('--half', action='store_true', help='half precision FP16 inference')
+    # parser.add_argument('--device', default='', help='device id (i.e. 0 or 0,1) or cpu')
+    # parser.add_argument('--view-img', action='store_true', help='display results')
+    # parser.add_argument('--save-txt', action='store_true', help='save results to *.txt')
+    # parser.add_argument('--classes', nargs='+', type=int, help='filter by class')
+    # parser.add_argument('--agnostic-nms', action='store_true', help='class-agnostic NMS')
+    # parser.add_argument('--augment', action='store_true', help='augmented inference')
+
+    parser.add_argument('--cfg', type=str, default='../Aerial Yolov3/cfg/yolov3-aerial.cfg', help='*.cfg path')
+    parser.add_argument('--names', type=str, default='../Aerial PreTrained/aerial.names', help='*.names path')
+    parser.add_argument('--weights', type=str, default='../Aerial PreTrained/yolov3-aerial.weights', help='weights path')
+    parser.add_argument('--source', type=str, default='../Aerial PreTrained/test video/y2mate.com - Drone footage of Vehicular Traffic On A Busy street Intersection In the City at Night4K_1080p.mp4', help='source')  # input file/folder, 0 for webcam
     parser.add_argument('--output', type=str, default='output', help='output folder')  # output folder
     parser.add_argument('--img-size', type=int, default=512, help='inference size (pixels)')
     parser.add_argument('--conf-thres', type=float, default=0.3, help='object confidence threshold')
@@ -182,6 +227,7 @@ if __name__ == '__main__':
     parser.add_argument('--classes', nargs='+', type=int, help='filter by class')
     parser.add_argument('--agnostic-nms', action='store_true', help='class-agnostic NMS')
     parser.add_argument('--augment', action='store_true', help='augmented inference')
+
     opt = parser.parse_args()
     opt.cfg = check_file(opt.cfg)  # check file
     opt.names = check_file(opt.names)  # check file
