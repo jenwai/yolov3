@@ -3,7 +3,7 @@ import argparse
 from models import *  # set ONNX_EXPORT in models.py
 from utils.datasets import *
 from utils.utils import *
-
+from ExtraUtils import *
 
 def detect(save_img=False):
     imgsz = (320, 192) if ONNX_EXPORT else opt.img_size  # (320, 192) or (416, 256) or (608, 352) for (height, width)
@@ -66,12 +66,14 @@ def detect(save_img=False):
         torch.backends.cudnn.benchmark = True  # set True to speed up constant image size inference
         dataset = LoadStreams(source, img_size=imgsz)
     else:
-        save_img = True
+        save_img = False
+        view_img = True
         dataset = LoadImages(source, img_size=imgsz)
 
     # Get names and colors
     names = load_classes(opt.names)
-    colors = [[random.randint(0, 255) for _ in range(3)] for _ in range(len(names))]
+    # colors = [[random.randint(0, 255) for _ in range(3)] for _ in range(len(names))]
+    colors = get_fix_colors(len(names))
 
     # Run inference
     t0 = time.time()
@@ -82,6 +84,7 @@ def detect(save_img=False):
     prev_pred = None
     frame_rate = 5
     prev_time = 0
+    cut_frame = True
     for path, img, im0s, vid_cap, cur_frame in dataset:
         img = torch.from_numpy(img).to(device)
         img = img.half() if half else img.float()  # uint8 to fp16/32
@@ -94,14 +97,18 @@ def detect(save_img=False):
         # Inference
         t1 = torch_utils.time_synchronized()
 
-        time_elapsed = torch_utils.time_synchronized() - prev_time
-        if prev_pred is None or time_elapsed > 1. / frame_rate:
-            prev_time = torch_utils.time_synchronized()
-            pred = model(img, augment=opt.augment)[0]
-            prev_pred = pred
+        if cut_frame:
+            #if input is not video or prev pred is none or 1 per frame rate
+            time_elapsed = torch_utils.time_synchronized() - prev_time
+            if vid_cap is None or prev_pred is None or time_elapsed > 1. / frame_rate:
+                prev_time = torch_utils.time_synchronized()
+                pred = model(img, augment=opt.augment)[0]
+                prev_pred = pred
+            else:
+                pred = prev_pred
+                process_pred = False
         else:
-            pred = prev_pred
-            process_pred = False
+            pred = model(img, augment=opt.augment)[0]
 
         t2 = torch_utils.time_synchronized()
 
@@ -156,6 +163,7 @@ def detect(save_img=False):
                                 label = '%s %.2f' % (names[int(cls)], conf)
                                 colour = colors[int(cls)]
                             plot_one_box(xyxy, im0, label=label, color=colour)
+                            draw_grid(im0)
 
                 # Print time (inference + NMS)
                 # print('%sDone. (%.3fs)' % (s, t2 - t1))
@@ -214,7 +222,7 @@ if __name__ == '__main__':
     parser.add_argument('--cfg', type=str, default='../Aerial Yolov3/cfg/yolov3-aerial.cfg', help='*.cfg path')
     parser.add_argument('--names', type=str, default='../Aerial PreTrained/aerial.names', help='*.names path')
     parser.add_argument('--weights', type=str, default='../Aerial PreTrained/yolov3-aerial.weights', help='weights path')
-    parser.add_argument('--source', type=str, default='../Aerial PreTrained/test video/y2mate.com - Drone footage of Vehicular Traffic On A Busy street Intersection In the City at Night4K_1080p.mp4', help='source')  # input file/folder, 0 for webcam
+    parser.add_argument('--source', type=str, default='../Aerial PreTrained/test video/y2mate.com - A drones perspective of traffic jams_1080pFHR.mp4', help='source')  # input file/folder, 0 for webcam
     parser.add_argument('--output', type=str, default='output', help='output folder')  # output folder
     parser.add_argument('--img-size', type=int, default=512, help='inference size (pixels)')
     parser.add_argument('--conf-thres', type=float, default=0.3, help='object confidence threshold')
