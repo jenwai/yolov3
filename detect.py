@@ -4,6 +4,7 @@ from models import *  # set ONNX_EXPORT in models.py
 from utils.datasets import *
 from utils.utils import *
 from ExtraUtils import *
+from detection_heatmap import *
 
 def detect(save_img=False):
     imgsz = (320, 192) if ONNX_EXPORT else opt.img_size  # (320, 192) or (416, 256) or (608, 352) for (height, width)
@@ -80,12 +81,18 @@ def detect(save_img=False):
     img = torch.zeros((1, 3, imgsz, imgsz), device=device)  # init img
     _ = model(img.half() if half else img.float()) if device.type != 'cpu' else None  # run once
 
-    #save the prev pred res
+    # TODO cater for multiple files detection
+    # save the prev pred res
     prev_pred = None
     frame_rate = 5
-    prev_time = 0
+    prev_pred_time = 0
     cut_frame = True
-    for path, img, im0s, vid_cap, cur_frame in dataset:
+    # save the exposure info for the heatmap
+    prev_dash_time = 0
+    current_exposure = None
+    final_exposure = None
+
+    for path, img, im0s, vid_cap, vid_dur in dataset:
         img = torch.from_numpy(img).to(device)
         img = img.half() if half else img.float()  # uint8 to fp16/32
         img /= 255.0  # 0 - 255 to 0.0 - 1.0
@@ -99,9 +106,9 @@ def detect(save_img=False):
 
         if cut_frame:
             #if input is not video or prev pred is none or 1 per frame rate
-            time_elapsed = torch_utils.time_synchronized() - prev_time
+            time_elapsed = torch_utils.time_synchronized() - prev_pred_time
             if vid_cap is None or prev_pred is None or time_elapsed > 1. / frame_rate:
-                prev_time = torch_utils.time_synchronized()
+                prev_pred_time = torch_utils.time_synchronized()
                 pred = model(img, augment=opt.augment)[0]
                 prev_pred = pred
             else:
@@ -127,6 +134,8 @@ def detect(save_img=False):
 
             # Process detections
             for i, det in enumerate(pred):  # detections for image i
+                # print('Frame start:::::::::::::::::::::::::::::::::::::::::::::::')
+                # print('det result:', type(det))
                 if webcam:  # batch_size >= 1
                     p, s, im0 = path[i], '%g: ' % i, im0s[i].copy()
                 else:
@@ -148,8 +157,15 @@ def detect(save_img=False):
                         else:
                             s += '%g %ss, ' % (n, names[int(c)])  # add to string
 
+                    detected_xyxy = []
+
                     # Write results
                     for *xyxy, conf, cls in reversed(det):
+                        # detected_xyxy.append(np.array([ [int(xyxy[0]), int(xyxy[1])], [int(xyxy[0]), int(xyxy[3])],
+                        #                       [int(xyxy[2]), int(xyxy[3])], [int(xyxy[2]), int(xyxy[1])] ], np.int32))
+                        detected_xyxy.append(np.array([ [xyxy[0], xyxy[1]], [xyxy[0], xyxy[3]],
+                                                       [xyxy[2], xyxy[3]], [xyxy[2], xyxy[1]] ], np.int32))
+
                         if save_txt:  # Write to file
                             xywh = (xyxy2xywh(torch.tensor(xyxy).view(1, 4)) / gn).view(-1).tolist()  # normalized xywh
                             with open(save_path[:save_path.rfind('.')] + '.txt', 'a') as file:
@@ -163,14 +179,43 @@ def detect(save_img=False):
                                 label = '%s %.2f' % (names[int(cls)], conf)
                                 colour = colors[int(cls)]
                             plot_one_box(xyxy, im0, label=label, color=colour)
-                            draw_grid(im0)
+                            # draw_grid(im0)
+
+                current_dash_time = torch_utils.time_synchronized()
+                new_exposures = accumulate_exposures(im0.shape, detected_xyxy, 1./frame_rate)
+
+                # accumulated heatmap
+                if final_exposure is None:
+                    final_exposure = np.zeros((im0.shape[0], im0.shape[1]), dtype=np.float)
+                final_exposure = final_exposure + new_exposures
+
+                norm_exp = vid_heatmap_normalize(final_exposure)
+                resize_exp = cv2.resize(norm_exp, (720, 480))
+                accumulated_heatmap = cv2.applyColorMap(resize_exp, cv2.COLORMAP_JET)
+
+                # accumulated_heatmap = cv2.applyColorMap(
+                #     cv2.resize(vid_heatmap_normalize(final_exposure), (720, 480)),
+                #     cv2.COLORMAP_JET)
+                cv2.imshow('acc heatmap', accumulated_heatmap)
+
+
+                # current heatmap (5 sec)
+                if current_exposure is None or current_dash_time - prev_dash_time > 8:
+                    current_exposure = np.zeros((im0.shape[0], im0.shape[1]), dtype=np.float)
+                    prev_dash_time = current_dash_time
+                current_exposure = current_exposure + new_exposures
+
+                current_heatmap = cv2.applyColorMap(
+                    cv2.resize(vid_heatmap_normalize(current_exposure), (720, 480)),
+                    cv2.COLORMAP_JET)
+                cv2.imshow('cur heatmap', current_heatmap)
 
                 # Print time (inference + NMS)
                 # print('%sDone. (%.3fs)' % (s, t2 - t1))
 
         # Stream results
         if view_img:
-            cv2.imshow(p, im0)
+            cv2.imshow(p, cv2.resize(im0, (1280, 720)))
             if cv2.waitKey(1) == ord('q'):  # q to quit
                 raise StopIteration
 
@@ -190,12 +235,33 @@ def detect(save_img=False):
                     vid_writer = cv2.VideoWriter(save_path, cv2.VideoWriter_fourcc(*opt.fourcc), fps, (w, h))
                 vid_writer.write(im0)
 
-        print('%sDone one frame. (%.3fs)' % (s, t2 - t1))
+        # print('%sDone one frame. (%.3fs)' % (s, t2 - t1))
 
     if save_txt or save_img:
         print('Results saved to %s' % os.getcwd() + os.sep + out)
         if platform == 'darwin':  # MacOS
             os.system('open ' + save_path)
+
+    # theatmap = time.time()
+    # print('Creating heatmap ... ')
+    # alternative 1
+    # create_heatmap(final_exposure)
+
+    # alternative 2
+    # plt.imshow(final_exposure, cmap='jet')
+    # # # plt.show()
+    # plt.savefig('heatmap plt.png', bbox_inches='tight')
+
+    # alternative 3
+    # color_image = cv2.applyColorMap(
+    #     vid_heatmap_normalize(final_exposure),
+    #     cv2.COLORMAP_JET)
+    # # cv2.imshow('heatmap dash', color_image)
+    # # cv2.waitKey(0)
+    # # cv2.destroyAllWindows()
+    # cv2.imwrite('heatmap.jpg', color_image)
+
+    # print('create heatmap time', (time.time() - theatmap))
 
     print('Done. (%.3fs)' % (time.time() - t0))
 
@@ -222,7 +288,7 @@ if __name__ == '__main__':
     parser.add_argument('--cfg', type=str, default='../Aerial Yolov3/cfg/yolov3-aerial.cfg', help='*.cfg path')
     parser.add_argument('--names', type=str, default='../Aerial PreTrained/aerial.names', help='*.names path')
     parser.add_argument('--weights', type=str, default='../Aerial PreTrained/yolov3-aerial.weights', help='weights path')
-    parser.add_argument('--source', type=str, default='../Aerial PreTrained/test video/y2mate.com - A drones perspective of traffic jams_1080pFHR.mp4', help='source')  # input file/folder, 0 for webcam
+    parser.add_argument('--source', type=str, default='../Aerial PreTrained/test video good/y2mate.com - A drones perspective of traffic jams_1080pFHR_Trim.mp4', help='source')  # input file/folder, 0 for webcam
     parser.add_argument('--output', type=str, default='output', help='output folder')  # output folder
     parser.add_argument('--img-size', type=int, default=512, help='inference size (pixels)')
     parser.add_argument('--conf-thres', type=float, default=0.3, help='object confidence threshold')

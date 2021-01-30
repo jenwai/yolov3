@@ -91,7 +91,7 @@ class LoadImages:  # for inference
                     ret_val, img0 = self.cap.read()
 
             self.frame += 1
-            print('video %g/%g (%g/%g) %s: ' % (self.count + 1, self.nF, self.frame, self.nframes, path), end='')
+            # print('video %g/%g (%g/%g) %s: ' % (self.count + 1, self.nF, self.frame, self.nframes, path), end='')
 
         else:
             # Read image
@@ -108,7 +108,7 @@ class LoadImages:  # for inference
         img = np.ascontiguousarray(img)
 
         # cv2.imwrite(path + '.letterbox.jpg', 255 * img.transpose((1, 2, 0))[:, :, ::-1])  # save letterbox image
-        return path, img, img0, self.cap, self.frame
+        return path, img, img0, self.cap, float(self.cap.get(cv2.CAP_PROP_FRAME_COUNT))/float(self.cap.get(cv2.CAP_PROP_FPS))
 
     def new_video(self, path):
         self.frame = 0

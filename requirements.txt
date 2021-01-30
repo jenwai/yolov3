@@ -12,6 +12,7 @@ torch===1.7.1+cu110
 torchvision===0.8.2+cu110
 tqdm>=4.41.0
 matplotlib>=3.2.2
+sklearn
 
 # coco ----------------------------------------
 # pycocotools>=2.0
