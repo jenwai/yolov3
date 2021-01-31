@@ -69,6 +69,7 @@ def detect(save_img=False):
     else:
         save_img = False
         view_img = True
+        show_heatmap = True
         dataset = LoadImages(source, img_size=imgsz)
 
     # Get names and colors
@@ -89,6 +90,7 @@ def detect(save_img=False):
     cut_frame = True
     # save the exposure info for the heatmap
     prev_dash_time = 0
+    small_dur = 8 # update cur heatmap every 8 sec
     current_exposure = None
     final_exposure = None
 
@@ -134,7 +136,7 @@ def detect(save_img=False):
 
             # Process detections
             for i, det in enumerate(pred):  # detections for image i
-                # print('Frame start:::::::::::::::::::::::::::::::::::::::::::::::')
+                detected_xyxy = []
                 # print('det result:', type(det))
                 if webcam:  # batch_size >= 1
                     p, s, im0 = path[i], '%g: ' % i, im0s[i].copy()
@@ -156,8 +158,6 @@ def detect(save_img=False):
                             s += '%g weird c = %s, ' % (n, int(c))
                         else:
                             s += '%g %ss, ' % (n, names[int(c)])  # add to string
-
-                    detected_xyxy = []
 
                     # Write results
                     for *xyxy, conf, cls in reversed(det):
@@ -181,36 +181,39 @@ def detect(save_img=False):
                             plot_one_box(xyxy, im0, label=label, color=colour)
                             # draw_grid(im0)
 
-                current_dash_time = torch_utils.time_synchronized()
-                new_exposures = accumulate_exposures(im0.shape, detected_xyxy, 1./frame_rate)
+                if view_img and show_heatmap:
+                    current_dash_time = torch_utils.time_synchronized()
+                    new_exposures = accumulate_exposures(im0.shape, detected_xyxy, 1./frame_rate)
 
-                # accumulated heatmap
-                if final_exposure is None:
-                    final_exposure = np.zeros((im0.shape[0], im0.shape[1]), dtype=np.float)
-                final_exposure = final_exposure + new_exposures
+                    # accumulated heatmap
+                    if final_exposure is None:
+                        final_exposure = np.zeros((im0.shape[0], im0.shape[1]), dtype=np.float)
+                    final_exposure = final_exposure + new_exposures
 
-                norm_exp = vid_heatmap_normalize(final_exposure)
-                resize_exp = cv2.resize(norm_exp, (720, 480))
-                accumulated_heatmap = cv2.applyColorMap(resize_exp, cv2.COLORMAP_JET)
+                    norm_exp = vid_heatmap_normalize(final_exposure, max_lim=vid_dur)
+                    resize_exp = cv2.resize(norm_exp, (720, 480))
+                    accumulated_heatmap = cv2.applyColorMap(resize_exp, cv2.COLORMAP_JET)
+                    cv2.imshow('acc heatmap', accumulated_heatmap)
 
-                # accumulated_heatmap = cv2.applyColorMap(
-                #     cv2.resize(vid_heatmap_normalize(final_exposure), (720, 480)),
-                #     cv2.COLORMAP_JET)
-                cv2.imshow('acc heatmap', accumulated_heatmap)
+                    # current heatmap (every n sec)
+                    if current_exposure is None or current_dash_time - prev_dash_time > small_dur:
+                        # show congestion index and level
+                        congestion_index = get_mean_density(current_exposure, max_lim=small_dur)
+                        # reset the current expose for every small duration
+                        current_exposure = np.zeros((im0.shape[0], im0.shape[1]), dtype=np.float)
+                        prev_dash_time = current_dash_time
 
+                    im0 = cv2.putText(im0, str(congestion_index), (1550, 1040), cv2.FONT_HERSHEY_SIMPLEX,
+                                      5, (255, 0, 0), 8, cv2.LINE_AA)
 
-                # current heatmap (5 sec)
-                if current_exposure is None or current_dash_time - prev_dash_time > 8:
-                    current_exposure = np.zeros((im0.shape[0], im0.shape[1]), dtype=np.float)
-                    prev_dash_time = current_dash_time
-                current_exposure = current_exposure + new_exposures
+                    current_exposure = current_exposure + new_exposures
 
-                current_heatmap = cv2.applyColorMap(
-                    cv2.resize(vid_heatmap_normalize(current_exposure), (720, 480)),
-                    cv2.COLORMAP_JET)
-                cv2.imshow('cur heatmap', current_heatmap)
+                    current_heatmap = cv2.applyColorMap(
+                        cv2.resize(vid_heatmap_normalize(current_exposure, max_lim=small_dur), (720, 480)),
+                        cv2.COLORMAP_JET)
+                    cv2.imshow('cur heatmap', current_heatmap)
 
-                # Print time (inference + NMS)
+                    # Print time (inference + NMS)
                 # print('%sDone. (%.3fs)' % (s, t2 - t1))
 
         # Stream results
@@ -288,11 +291,11 @@ if __name__ == '__main__':
     parser.add_argument('--cfg', type=str, default='../Aerial Yolov3/cfg/yolov3-aerial.cfg', help='*.cfg path')
     parser.add_argument('--names', type=str, default='../Aerial PreTrained/aerial.names', help='*.names path')
     parser.add_argument('--weights', type=str, default='../Aerial PreTrained/yolov3-aerial.weights', help='weights path')
-    parser.add_argument('--source', type=str, default='../Aerial PreTrained/test video good/y2mate.com - A drones perspective of traffic jams_1080pFHR_Trim.mp4', help='source')  # input file/folder, 0 for webcam
+    parser.add_argument('--source', type=str, default='../Aerial PreTrained/test video good/y2mate.com - Verkeerskruispunt drone_1080p_Trim_Long.mp4', help='source')  # input file/folder, 0 for webcam
     parser.add_argument('--output', type=str, default='output', help='output folder')  # output folder
     parser.add_argument('--img-size', type=int, default=512, help='inference size (pixels)')
     parser.add_argument('--conf-thres', type=float, default=0.3, help='object confidence threshold')
-    parser.add_argument('--iou-thres', type=float, default=0.6, help='IOU threshold for NMS')
+    parser.add_argument('--iou-thres', type=float, default=0.4, help='IOU threshold for NMS')
     parser.add_argument('--fourcc', type=str, default='mp4v', help='output video codec (verify ffmpeg support)')
     parser.add_argument('--half', action='store_true', help='half precision FP16 inference')
     parser.add_argument('--device', default='', help='device id (i.e. 0 or 0,1) or cpu')

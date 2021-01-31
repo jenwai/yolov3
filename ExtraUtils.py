@@ -42,6 +42,10 @@ def vid_heatmap_normalize(det_nparray, min_lim=None, max_lim=None):
     :param max_lim:
     :return:
     """
+
+    if det_nparray.max() == 0:
+        return det_nparray.astype(np.uint8)
+
     if min_lim is None:
         min_lim = 0 # default min is zero
     if max_lim is None:
@@ -61,8 +65,33 @@ def vid_heatmap_normalize(det_nparray, min_lim=None, max_lim=None):
 
     return det_nparray
 
-#
+
+def get_mean_density(det_nparray, min_lim=None, max_lim=None):
+
+    if det_nparray is None or det_nparray.max() == 0:
+        return 0
+
+    if min_lim is None:
+        min_lim = 0  # default min is zero
+    if max_lim is None:
+        max_lim = det_nparray.max()  # default max is the max value in array
+
+    # 'relu' the values in array
+    det_nparray[det_nparray < min_lim] = min_lim
+    det_nparray[det_nparray > max_lim] = max_lim
+
+    # normalize using the max and min
+    det_nparray = (det_nparray - min_lim) / (max_lim - min_lim)
+    norm_nparray = det_nparray[det_nparray > 0]
+
+    if len(norm_nparray) == 0:
+        return 0
+    return round(np.mean(norm_nparray[norm_nparray > 0]), 2)
+
+
 # accumulated_exposures = np.zeros((10, 10), dtype=np.float)
+# print(get_congestion_index(accumulated_exposures))
+# print(vid_heatmap_normalize(accumulated_exposures))
 # cv2.fillConvexPoly(accumulated_exposures, np.array([[1,1],[1,3],[3,3],[3,1]]), (10.22))
-# accumulated_exposures = vid_heatmap_normalize(accumulated_exposures, 11, 1, 9)
+# norm = vid_heatmap_normalize(accumulated_exposures)
 # print(accumulated_exposures)
